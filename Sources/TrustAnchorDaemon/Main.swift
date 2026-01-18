@@ -48,16 +48,12 @@ struct TrustAnchorDaemon {
         print("Daemon running. Log: \(logURL.path)")
 
         // RunLoop is needed for ES Client (if it uses mach ports/runloop sources)
-        // Main.swift in @main async context doesn't necessarily block forever unless we tell it to.
-        // Standard RunLoop.current.run() blocks.
-
-        // Note: ESClientWrapper logic in original code used RunLoop.
-        // We can keep using RunLoop.
+        // Ensure esWrapper is kept alive during execution
 
         await withTaskCancellationHandler {
-             // Keep the task alive or run the loop
-             // For a daemon, we usually park the thread.
-             RunLoop.current.run()
+            withExtendedLifetime(esWrapper) {
+                 RunLoop.current.run()
+            }
         } onCancel: {
             print("Shutting down...")
         }
