@@ -3,37 +3,41 @@ import TrustAnchorLib
 
 @main
 struct TrustAnchorDaemon {
-    static func main() {
+    static func main() async {
         print("Starting TrustAnchor...")
         
-        let runLoop = RunLoop.current
-        
         // 1. Setup Data Structures
-        let graph = TrustGraph()
-        let logURL = URL(fileURLWithPath: "trustanchor_audit.log") // Default to current dir
+        let graph = TrustGraph() // actor
+        let logURL = URL(fileURLWithPath: "trustanchor_audit.log")
         
         let logger: AuditLogger
         do {
-            logger = try AuditLogger(logFileURL: logURL)
+            logger = try AuditLogger(logFileURL: logURL) // actor
         } catch {
             print("Fatal: Could not init logger: \(error)")
             exit(1)
         }
         
         // 2. Setup ES Client
+        // ESClientWrapper captures graph and logger.
+        // The handler is called by ESClientWrapper on its own queue (or simulation timer).
+        // Since we are calling actor methods, we need to wrap the call in Task { await ... }
+
         let esWrapper = ESClientWrapper { event in
-            // Ingest into Graph
-            graph.ingest(event: event)
-            
-            // Log to disk
-            do {
-                try logger.log(event: event)
-            } catch {
-                print("Failed to log event: \(error)")
+            Task {
+                // Ingest into Graph
+                await graph.ingest(event: event)
+
+                // Log to disk
+                do {
+                    try await logger.log(event: event)
+                } catch {
+                    print("Failed to log event: \(error)")
+                }
+
+                // Debug print
+                print("[Event] \(event.type) pid=\(event.process.pid) path=\(event.process.path)")
             }
-            
-            // Debug print
-            print("[Event] \(event.type) pid=\(event.process.pid) path=\(event.process.path)")
         }
         
         // 3. Setup IPC
@@ -42,8 +46,20 @@ struct TrustAnchorDaemon {
         
         // 4. Keep alive
         print("Daemon running. Log: \(logURL.path)")
-        withExtendedLifetime(esWrapper) {
-            runLoop.run()
+
+        // RunLoop is needed for ES Client (if it uses mach ports/runloop sources)
+        // Main.swift in @main async context doesn't necessarily block forever unless we tell it to.
+        // Standard RunLoop.current.run() blocks.
+
+        // Note: ESClientWrapper logic in original code used RunLoop.
+        // We can keep using RunLoop.
+
+        await withTaskCancellationHandler {
+             // Keep the task alive or run the loop
+             // For a daemon, we usually park the thread.
+             RunLoop.current.run()
+        } onCancel: {
+            print("Shutting down...")
         }
     }
 }

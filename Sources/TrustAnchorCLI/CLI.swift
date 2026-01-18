@@ -1,6 +1,8 @@
 import Foundation
 import ArgumentParser
 import Network
+import TrustAnchorLib
+import CryptoKit
 
 @main
 struct TrustAnchor: ParsableCommand {
@@ -40,28 +42,98 @@ struct VerifyLog: ParsableCommand {
     
     func run() throws {
         print("Verifying log at \(path)...")
-        // Implementation of verification logic reading the file line by line
-        // and re-computing hashes.
-        // For brevity, we will implement a basic check here.
         
         let url = URL(fileURLWithPath: path)
-        let data = try String(contentsOf: url)
-        let lines = data.components(separatedBy: .newlines).filter { !$0.isEmpty }
+        guard FileManager.default.fileExists(atPath: path) else {
+            print("Error: File not found.")
+            throw ExitCode.validationFailure
+        }
+
+        // Read file content
+        let data = try Data(contentsOf: url)
+        guard let content = String(data: data, encoding: .utf8) else {
+            print("Error: Could not read file as UTF8.")
+            throw ExitCode.validationFailure
+        }
+
+        let lines = content.components(separatedBy: .newlines).filter { !$0.isEmpty }
         
+        var prevHashData = Data(repeating: 0, count: 32) // Genesis hash is all zeros
         var valid = true
         var count = 0
-        var prevHashData = Data(repeating: 0, count: 32) // Initial zero hash
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys // Must match the logger's setting
+        let decoder = JSONDecoder()
         
-        // This is a simplified "offline" verification. 
-        // Real implementation must decode the JSON of each line.
-        // Since we don't have the EventModels available easily here unless we import TrustAnchorLib (which we do),
-        // let's try to decode.
+        for (index, line) in lines.enumerated() {
+            guard let lineData = line.data(using: .utf8) else {
+                print("Line \(index + 1): Invalid encoding")
+                valid = false
+                break
+            }
+
+            do {
+                let entry = try decoder.decode(LogEntry.self, from: lineData)
+
+                // 1. Verify 'prevHash' matches our rolling hash
+                guard let entryPrevHash = Data(base64Encoded: entry.prevHash) else {
+                     print("Line \(index + 1): Invalid prevHash format")
+                     valid = false
+                     break
+                }
+
+                if entryPrevHash != prevHashData {
+                    print("Line \(index + 1): BROKEN CHAIN!")
+                    print("  Expected prev: \(prevHashData.base64EncodedString())")
+                    print("  Found prev:    \(entry.prevHash)")
+                    valid = false
+                    break
+                }
+
+                // 2. Compute Expected Hash for this entry
+                // H_i = SHA256(H_{i-1} || encode(event))
+
+                // We must re-encode the event to get the bytes that were hashed.
+                // NOTE: This relies on deterministic encoding (.sortedKeys).
+                let eventBytes = try encoder.encode(entry.event)
+                let combined = prevHashData + eventBytes
+                let calculatedHash = SHA256.hash(data: combined)
+
+                // 3. Compare with 'currentHash'
+                guard let entryCurrentHash = Data(base64Encoded: entry.currentHash) else {
+                    print("Line \(index + 1): Invalid currentHash format")
+                    valid = false
+                    break
+                }
+
+                // Convert SHA256.Digest to Data for comparison
+                let calculatedHashData = Data(calculatedHash)
+
+                if calculatedHashData != entryCurrentHash {
+                    print("Line \(index + 1): HASH MISMATCH!")
+                    print("  Calculated: \(calculatedHashData.base64EncodedString())")
+                    print("  Recorded:   \(entry.currentHash)")
+                    valid = false
+                    break
+                }
+
+                // Update for next iteration
+                prevHashData = calculatedHashData
+                count += 1
+
+            } catch {
+                print("Line \(index + 1): Decoding error: \(error)")
+                valid = false
+                break
+            }
+        }
         
-        // Note: We need to import TrustAnchorLib in Package.swift for CLI target.
-        // We did that. But we need to make sure the JSON structure matches exactly what we wrote.
-        
-        print("Log contains \(lines.count) entries.")
-        print("Verification complete (Stubbed implementation).")
+        if valid {
+            print("✅ Log verification passed. \(count) entries verified.")
+        } else {
+            print("❌ Log verification FAILED.")
+            throw ExitCode.failure
+        }
     }
 }
 
