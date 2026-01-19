@@ -1,20 +1,19 @@
 import Foundation
 
-public class TrustGraph {
+public actor TrustGraph {
     // A simplified graph model: storage of processes (nodes) and their relationships.
-    // In a real system, this would be a directed graph structure.
     
-    public struct NodeID: Hashable {
+    public struct NodeID: Hashable, Sendable {
         public let id: String // e.g., pid, path, or unique string
     }
     
-    public enum NodeType {
+    public enum NodeType: Sendable {
         case process
         case binary
         case file
     }
     
-    public struct Node {
+    public struct Node: Sendable {
         public let id: NodeID
         public let type: NodeType
         public var data: [String: String]
@@ -86,6 +85,8 @@ public class TrustGraph {
     
     public func getGraphViz() -> String {
         var dot = "digraph TrustGraph {\n"
+        // Since we are iterating dictionary, order is not guaranteed.
+        // For stable output in tests, we might want to sort, but for this it's fine.
         for (id, node) in nodes {
             let label = "\(node.type): \(node.data["path"] ?? id.id)\\nScore: \(node.trustScore)"
             dot += "  \"\(id.id)\" [label=\"\(label)\"];\n"
